@@ -1,0 +1,227 @@
+---
+title: "Link TDR data to environment"
+author: "Benjamin Dupuis"
+date: "`r Sys.Date()`"
+format:
+  html:
+    self-contained: true
+    code-fold: true
+---
+
+This script associates environmental and individual parameters.
+
+```{r preambule, echo = F, output = F}
+rm(list = ls())
+gc()
+
+library(tidyverse); library(ggpubr)
+library(viridis)
+
+theme_set(theme_bw())
+```
+
+First we load TDR and environmental data
+
+```{r load tdr, echo = FALSE, message = FALSE}
+ade_deploy <- read_csv("data/ade_deploy_1998-2024_final_wo_env.csv")
+env_tibble <- read.csv("/media/bdupuis/1091_PhD_BD1/Data/Environmental data/env_data_copernicus.csv")
+
+#adjust dates settings
+env_tibble$date <- ymd(env_tibble$date)
+env_tibble$season <- ifelse(month(env_tibble$date) <= 2,
+                            year(env_tibble$date) - 1,
+                            year(env_tibble$date))
+env_tibble$year <- as.factor(year(env_tibble$date))
+env_tibble$dummy_date <- env_tibble$date
+year(env_tibble$dummy_date) <- 1904
+year(env_tibble$dummy_date[which(month(env_tibble$dummy_date) <= 2)]) <- 1905
+
+#remove feb 29th bug
+env_tibble <- env_tibble %>% filter(!is.na(dummy_date))
+
+env_tibble$days_since_start_season <- env_tibble$dummy_date - ymd("1904-11-01")
+
+#rename some cols for clarity
+env_tibble <- env_tibble %>%
+  rename(mean_sic = sic)
+
+glimpse(env_tibble)
+```
+
+Let's quickly look at the environmental variables.
+
+First sea-ice variables
+
+```{r plot env ice, warning = FALSE}
+ggplot(data = env_tibble, aes(x = dummy_date, y = mean_sic, col = as.factor(season))) + 
+  geom_line() +
+  scale_color_viridis(discrete = T) + 
+  labs(x = "Date", y = "SIC", col = "Breeding season") +  
+  scale_x_date(date_labels = "%b", limits = c(ymd("1904-10-01", ymd("1905-02-28")))) +
+  theme(legend.position = "right") +
+  facet_wrap(~spatial_scale)
+
+ggplot(data = env_tibble, aes(x = dummy_date, y = frac_ice, col = as.factor(season))) + 
+  geom_line() +
+  scale_color_viridis(discrete = T) + 
+  labs(x = "Date", y = "Sea-ice fraction (>15%)", col = "Breeding season") +  
+  scale_x_date(date_labels = "%b", limits = c(ymd("1904-10-01", ymd("1905-02-28")))) +
+  theme(legend.position = "right") +
+  facet_wrap(~spatial_scale)
+
+ggplot(data = env_tibble, aes(x = dummy_date, y = frac_fast, col = as.factor(season))) + 
+  geom_line() +
+  scale_color_viridis(discrete = T) + 
+  labs(x = "Date", y = "Fast ice fraction (>80%)", col = "Breeding season") +  
+  scale_x_date(date_labels = "%b", limits = c(ymd("1904-10-01", ymd("1905-02-28")))) +
+  theme(legend.position = "right") +
+  facet_wrap(~spatial_scale)
+
+ggplot(data = env_tibble, aes(x = dummy_date, y = frac_pack, col = as.factor(season))) + 
+  geom_line() +
+  scale_color_viridis(discrete = T) + 
+  labs(x = "Date", y = "Pack ice fraction (between 15 and 80 %)", col = "Breeding season") +  
+  scale_x_date(date_labels = "%b", limits = c(ymd("1904-10-01", ymd("1905-02-28")))) +
+  theme(legend.position = "right") +
+  facet_wrap(~spatial_scale)
+
+retreat_tibble <- env_tibble %>% 
+  filter(spatial_scale == "S1", mean_sic < 0.20, dummy_date > ymd("1904-10-01")) %>% 
+  group_by(season) %>% 
+  summarise(ice_retreat_date = min(dummy_date),
+            ice_retreat_day = min(days_since_start_season))
+
+retreat_tibble %>% 
+  ggplot(aes(x = season, y = ice_retreat_date)) +
+  geom_point(size = 2) +
+  geom_line(linewidth = 1) +
+  labs(x = "Season", y = "Sea-ice retreat date", title = "Earliest date when sea-ice concentration falls below 20%", subtitle = "Measured over Adélie penguins wintering area") +
+  labs_pubr() +
+  theme_pubr()
+ggsave(filename = "figures/env_data/sic_retreat_plot.png", width = 9, height = 6, dpi = 500)
+#smoothed line 
+
+library(zoo)
+env_tibble_smooth <- env_tibble %>% filter(spatial_scale == "S1")
+env_tibble_smooth$sic_smooth <- rollmean(env_tibble_smooth$mean_sic, k = 7, align = "left", fill = c(NA, NA, NA))
+sic_plot <- ggplot(data = env_tibble_smooth, aes(x = dummy_date, y = sic_smooth, col = as.factor(season))) + 
+  geom_line(linewidth = 1) +
+  scale_color_viridis(discrete = T, option = "D") + 
+  labs_pubr() +
+  theme_pubr() +
+  labs(x = "Date", y = "SIC", col = "Breeding season") +  
+  scale_x_date(date_labels = "%b", limits = c(ymd("1904-10-01", ymd("1905-02-28")))) +
+  theme(legend.position = "top") +
+  guides(color=guide_legend(nrow=3, byrow=TRUE))
+
+ggsave(plot = sic_plot, filename = "figures/env_data/sic_smooth_plot.png", width = 9, height = 6, dpi = 500)
+```
+
+Now we add sea-ice retreat dates (cf. youngflesh et al. 2017 in Ecology) and phytoplantkon bloom intensity and temporality
+
+```{r}
+sic_cr <- env_tibble %>% filter(spatial_scale == "S3" & dummy_date >= dmy("20-12-1904") & dummy_date <= dmy("20-01-1905")) %>% 
+  group_by(season) %>% 
+  summarise(cr_sic_S3 = mean(mean_sic),
+            cr_pack_S3 = mean(frac_pack),
+            cr_fast_S3 = mean(frac_fast))
+
+#winter here is july + august
+sic_winter <- env_tibble %>% filter(spatial_scale == "S1" & dummy_date >= dmy("01-07-1904") & dummy_date <= dmy("31-08-1904")) %>% 
+  group_by(season) %>% 
+  summarise(winter_sic_S1 = mean(mean_sic),
+            winter_pack_S1 = mean(frac_pack),
+            winter_fast_S1 = mean(frac_fast))
+
+retreat_tibble <- left_join(left_join(retreat_tibble, sic_winter), sic_cr)
+```
+
+From that we can extract several variables that we will use in future models (average, sd, min, max etc.)
+
+```{r}
+#trip level
+ade_deploy$sic_trip <- NA
+ade_deploy$pack_trip <- NA
+ade_deploy$fast_trip <- NA
+
+for(i in 1:nrow(ade_deploy)){
+  #trip lvl
+  start_trip <- date(ade_deploy$start_trip[i])
+  end_trip <- date(ade_deploy$end_trip[i])
+  trip_dates <- seq.Date(from = start_trip, to = end_trip, by = 1)
+  sub_env_data <- env_tibble[which(env_tibble$date %in% trip_dates),] %>% filter(spatial_scale == "S3")
+  
+  ade_deploy$sic_trip[i] <- mean(sub_env_data$mean_sic, na.rm = T)
+  ade_deploy$pack_trip[i] <- mean(sub_env_data$frac_pack, na.rm = T)
+  ade_deploy$fast_trip[i] <- mean(sub_env_data$frac_fast, na.rm = T)
+}
+
+#Add season env
+ade_deploy <- left_join(ade_deploy, retreat_tibble, by = join_by(year == season))
+
+ade_deploy <- ade_deploy %>% dplyr::select(season, year, tag_id,
+                             bm_init, flipper_length_mm,
+                             logger_type, mass_end_kg , logger_id, colony, n_chick_equip,
+                             start_trip, end_trip, trip_duration_days,
+                             mean_depth_foraging, mean_dive_duration,
+                             daily_dive_duration_hrs,
+                             dee, daily_time_foraging_sec,
+                             sic_trip, pack_trip, fast_trip,
+                             ice_retreat_day,
+                             winter_sic_S1, winter_pack_S1, winter_fast_S1,
+                             cr_sic_S3, cr_pack_S3, cr_fast_S3)
+
+ade_deploy$relative_departure_day <- date(ade_deploy$start_trip) - dmy(paste0("01-11-",ade_deploy$year))
+ade_deploy$n_day_since_ice_retreat <- ade_deploy$relative_departure_day - ade_deploy$ice_retreat_day
+
+#Add date relative to hatching peak + BS
+bs_tibble <- read.csv("data/breeding_success_ade.csv") %>% 
+  dplyr::select(year, FS_janv, hatching_peak, prop_succeed_incub)
+
+ade_deploy <- left_join(ade_deploy, bs_tibble)
+ade_deploy$departure_rel_hatch_peak <- date(ade_deploy$start_trip) - dmy(ade_deploy$hatching_peak)
+
+#Add body condition
+lm_body_condition <- lm(bm_init ~ flipper_length_mm,
+   data = ade_deploy)
+
+ade_deploy <- ade_deploy %>%
+  mutate(body_condition = resid(lm_body_condition))
+
+mf_tibble <- read.csv("/media/bdupuis/1091_PhD_BD1/Data/Environmental data/mf_yearly_data.csv")
+
+ade_deploy <- left_join(ade_deploy, mf_tibble)
+write_csv(ade_deploy, "data/ade_deploy_1998-2024_w_env_bs.csv")
+```
+
+Prepare the csv's for NetLogo
+
+```{r}
+daily_ibm <- env_tibble %>%
+  filter(spatial_scale == "S3") %>%
+  select(date, season, mean_sic) %>% 
+  rename(year = season)
+
+#add hatching peak date
+peak_tibble <- read.csv("data/hatching_peak_ade.csv")
+daily_ibm <- left_join(daily_ibm, peak_tibble) %>% 
+  mutate(hatching_peak = dmy(hatching_peak),
+         days_since_hatching_peak = date - hatching_peak) %>% 
+  filter(!is.na(hatching_peak), month(date) %in% c(12, 1, 2)) %>% 
+  arrange(date) %>% 
+  select(days_since_hatching_peak, date, year, mean_sic)
+
+#yearly data
+yearly_ibm <- retreat_tibble %>%
+  rename(year = season) %>% 
+  select(year, ice_retreat_day, winter_sic_S1) %>% 
+  filter(!is.na(winter_sic_S1))
+
+yearly_ibm <- left_join(yearly_ibm, mf_tibble %>% select(year, n_day_snow))
+
+glimpse(daily_ibm)
+glimpse(yearly_ibm)
+
+write_csv(daily_ibm, "/media/bdupuis/1091_PhD_BD1/Research projects/AdeBM/data/daily_ibm_env_data.csv")
+write_csv(yearly_ibm, "/media/bdupuis/1091_PhD_BD1/Research projects/AdeBM/data/yearly_ibm_env_data.csv")
+```

@@ -1,0 +1,1469 @@
+---
+title: "Data exploration"
+author: "Benjamin Dupuis"
+date: "`r Sys.Date()`"
+format:
+  html:
+    self-contained: true
+    code-fold: true
+---
+
+This script regroups the data exploration and statistical analyses of the different individual and colony-level variables studied in this paper.
+
+```{r preambule, echo = F, output = F}
+rm(list = ls())
+gc()
+
+library(tidyverse) ; library(data.table) ; library(ggpubr)
+library(patchwork) ; library(viridis) ; library(plotly)
+library(scattermore) ; library(kableExtra) ; library(OpenMx)
+library(semPlot) ; library(lavaan)
+library(kableExtra) ; library(GGally) ; library(lavaanPlot); library(GGally)
+library(MuMIn) ; library(ggeffects) ; library(rempsyc) ; library(sjPlot)
+library(DHARMa) ; library(fitdistrplus) ; library(jtools) ; 
+library(piecewiseSEM) ;
+library(tidySEM) ; library(lme4) ; library(mgcv)
+library(lme4) ; library(flextable)
+library(lmerTest) ; library(gtsummary)
+library(officer)
+library(emmeans) ; library(glmmTMB) ; library(betareg)
+library(performance)
+
+theme_set(theme_bw())
+
+mxOption(key='Number of Threads', value=parallel::detectCores())
+
+generate_models_glmm <- function(response, predictors, random_effect) {
+  n <- length(predictors)
+  comb_list <- lapply(1:n, function(x) combn(predictors, x, simplify = FALSE))
+  comb_list <- unlist(comb_list, recursive = FALSE)
+  
+  formulas <- lapply(comb_list, function(vars) {
+    form <- paste(response, "~", paste(vars, collapse = " + "), "+ (1|", random_effect, ")")
+    as.formula(form)
+  })
+  
+    # Add the null model formula
+  null_formula <- as.formula(paste(response, "~ 1"))
+  random_formula <- as.formula(paste(response, "~ 1 + (1|", random_effect, ")"))
+  formulas <- c(list(null_formula), list(random_formula), formulas)  # Add null model to the beginning of the list
+  
+  return(formulas)
+}
+
+generate_models_glm <- function(response, predictors) {
+  n <- length(predictors)
+  comb_list <- lapply(1:n, function(x) combn(predictors, x, simplify = FALSE))
+  comb_list <- unlist(comb_list, recursive = FALSE)
+  
+  formulas <- lapply(comb_list, function(vars) {
+    form <- paste(response, "~", paste(vars, collapse = " + "))
+    as.formula(form)
+  })
+  
+    # Add the null model formula
+  null_formula <- as.formula(paste(response, "~ 1"))
+  formulas <- c(list(null_formula), formulas)  # Add null model to the beginning of the list
+  
+  return(formulas)
+}
+```
+
+```{r load, warning = F, echo = F, output = F}
+ade_deploy <- read_csv("data/ade_deploy_1998-2024_w_env_bs.csv")
+
+#Remove individuals with unrealistic measures of flipper length and estimate of DEE if needed
+ade_deploy$flipper_length_mm[which(ade_deploy$flipper_length_mm < 150)] <- as.numeric(paste0(ade_deploy$flipper_length_mm[which(ade_deploy$flipper_length_mm < 150)], "0"))
+
+ade_deploy$hatching_peak <- dmy(ade_deploy$hatching_peak)
+year(ade_deploy$hatching_peak) <- 1904
+ade_deploy$hatching_peak_day <- as.numeric(ade_deploy$hatching_peak - ymd("1904-11-01"))
+
+ade_deploy <- ade_deploy %>%
+  dplyr::filter(dee < 15000)
+
+ade_deploy$winter_sie <- ade_deploy$winter_fast_S1 + ade_deploy$winter_pack_S1
+
+ade_deploy <- ade_deploy %>%
+  dplyr::rename(daily_time_feeding_sec = daily_time_foraging_sec) %>% 
+  mutate(daily_time_feeding_hrs = daily_time_feeding_sec/60/60,
+    daily_time_foraging_hrs = daily_dive_duration_hrs - daily_time_feeding_hrs)
+
+ade_deploy <- ade_deploy %>% 
+  mutate(season = as.factor(season),
+         log_trip = log(trip_duration_days))
+```
+
+# Inter-annual variations
+
+```{r interannual variations}
+#trip lvl data
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = dee)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  labs_pubr() +
+  labs(x = "Year", y = "DEE")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = mean_depth_foraging)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  labs_pubr() +
+  labs(x = "Year", y = "Average foraging (prey) depth")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = daily_time_feeding_hrs)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  labs_pubr() +
+  labs(x = "Year", y = "Time spent feeding per day (hours)")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = daily_time_foraging_hrs)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  labs_pubr() +
+  labs(x = "Year", y = "Time spent foraging (dive - feed) per day (hours)")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = trip_duration_days)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  labs_pubr() +
+  labs(x = "Year", y = "Trip duration (days)")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = body_condition)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  labs_pubr() +
+  labs(x = "Year", y = "Body condition")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = bm_init)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  labs_pubr() +
+  labs(x = "Year", y = "Body mass upon equipment (kg)")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = mean_depth_foraging)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "Average Foraging depth (m)")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = relative_departure_day - hatching_peak_day)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "Trip date relative to hatching peak")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = pack_trip)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "Pack-ice fraction over trip")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = fast_trip)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "fast-ice fraction over trip")
+
+ade_deploy %>%
+  ggplot(aes(x = as.factor(year), y = sic_trip)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() + 
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "SIC over trip")
+
+#season lvl data
+ade_deploy %>% group_by(season, ice_retreat_day) %>% 
+  ggplot(aes(x = as.factor(year), y = ice_retreat_day)) +
+  geom_point() +
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "Sea-ice retreat date (days after 01/11)")
+
+ade_deploy %>% group_by(season, winter_sic_S1) %>% 
+  ggplot(aes(x = as.factor(year), y = winter_sic_S1)) +
+  geom_point() +
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "Winter sea-ice concentration")
+
+ade_deploy %>% group_by(season, FS_janv) %>%
+  ggplot(aes(x = as.factor(year), y = FS_janv)) +
+  geom_point() +
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "N chicks in Jan. / N breeding pairs")
+
+ade_deploy %>% group_by(season, hatching_peak) %>%
+  ggplot(aes(x = as.factor(year), y = hatching_peak)) +
+  geom_point() +
+  theme_pubr() +
+  labs_pubr() +
+  labs(x = "Year", y = "Hatching peak date")
+
+```
+
+# Body Condition
+
+We test whether body condition before leaving the colony is
+
+a\. diminishing across the CR phase because adults feed their chicks
+
+b\. affected by environmental phenology (i.e. sea-ice retreat )
+
+c\. prey abundance (i.e. winter sic)
+
+We compare the following models
+
+1.  full model : body condition \~ trip date + sea-ice phenology + winter sic + (1 \| season)
+2.  Date only : body condition \~ trip date + (1 \| season)
+3.  Environment only : body condition \~ sea-ice phenology + winter sic + (1 \| season)
+4.  Phenology only : body condition \~ sea-ice phenology + (1 \| season)
+5.  Prey only : body condition \~ winter sic + (1 \| season)
+6.  Date & phenology : body condition \~ trip date + sea-ice phenology + (1 \| season)
+7.  Date & prey: body condition \~ trip date + winter sic + (1 \| season)
+8.  Null model : body condition \~ (1 \| season)
+
+```{r body condition, message = F}
+#scatterplot
+cowplot::plot_grid(
+ade_deploy %>%
+  ggplot(aes(x = departure_rel_hatch_peak, y = body_condition)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = winter_sic_S1, y = body_condition)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = ice_retreat_day, y = body_condition)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+nrow = 2)
+
+#models
+# BC mod
+predictors <- c("departure_rel_hatch_peak", "ice_retreat_day", "winter_sic_S1", "I(winter_sic_S1^2)")
+response <- "body_condition"
+random_effect <- "season"
+
+model_formulas <- generate_models_glmm(response, predictors, random_effect)
+
+model_list <- lapply(model_formulas, function(formula) {
+  glmmTMB(formula, data = ade_deploy)
+})
+
+#Model selection
+#aic_values <- sapply(model_list, AIC)
+aicc_values <- sapply(model_list, AICc)
+# bic_values <- sapply(model_list, BIC)
+
+#R squared
+r2_values <- lapply(model_list, function(model) {
+  r.squaredGLMM(model)
+})
+# Convert the list to a data frame
+r2_df <- do.call(rbind, r2_values)
+colnames(r2_df) <- c("Marginal_R2", "Conditional_R2")
+
+# Extract model formulas or terms
+model_terms <- sapply(model_formulas, function(formula) {
+  paste(deparse(formula), collapse = " ")  # Convert formula to a string
+})
+
+# Print AIC values
+aic_table <- data.frame(
+  Model = 1:length(model_list),
+  Terms = model_terms,
+  #AIC = aic_values,
+  AICc = aicc_values,
+  delta_AICc = 0,
+  # BIC = bic_values,
+  Marginal_R2 = r2_df[, "Marginal_R2"],
+  Conditional_R2 = r2_df[, "Conditional_R2"]
+) %>% arrange(AICc)
+
+aic_table$delta_AICc <- aic_table$AICc - aic_table$AICc[1]
+
+mod_select <- nice_table(rbind(aic_table[1:5,-1], aic_table[which(aic_table$Model == 2),-1],aic_table[which.min(aic_table$Model),-1]))
+save_as_docx(mod_select, path = "figures/mod_selection_body_condition_no_2012.docx")
+
+#best model
+best_model_index <- which.min(aicc_values)
+fit_best <- model_list[[best_model_index]]
+
+#check model
+# Extract deviance residuals
+residuals_dev <- residuals(fit_best, type = "deviance")
+
+# Plot residuals vs fitted values --> randomly scatteredd around 0 = homoscedasticity
+plot(fitted(fit_best), residuals_dev, xlab = "Fitted values", ylab = "Deviance residuals")
+abline(h = 0, col = "red", lty = 2)
+
+simulateResiduals(fittedModel = fit_best, plot = T)
+
+#summary
+model_summary <- summary(fit_best)
+print(model_summary)
+
+modelsummary(fit_best,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_body_condition.docx")
+
+#without 2012
+sub_mod <- glmmTMB(body_condition ~ departure_rel_hatch_peak + winter_sic_S1 + I(winter_sic_S1^2) + ice_retreat_day + 
+    (1 | season),
+                   data = ade_deploy %>% filter(year != "2012"))
+model_summary <- summary(sub_mod)
+print(model_summary)
+modelsummary(sub_mod,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_body_condition_2012.docx")
+```
+
+We detect:
+
+-   Negative linear effects for chick age
+
+-   Quadratic effect of winter SIC
+
+```{r plot bc, message = F}
+output_plot <- cowplot::plot_grid(
+plot(ggpredict(fit_best, terms = "ice_retreat_day[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(-1,2.1)) +
+  labs(x = "Sea-ice retreat date \nrelative to November 1st", y = "Body condition", title = "A.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(ggpredict(fit_best, terms = "departure_rel_hatch_peak[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(-1,2.1)) +
+  labs(x = "Date of departure \nrelative to hatching peak", y = "Body condition", title = "B.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(ggpredict(fit_best, terms = "winter_sic_S1[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(-1,2.1)) +
+  labs(x = "Proportion of wintering area\ncovered by sea-ice", y = "Body condition", title = "C.") +
+  theme_pubr() +
+  labs_pubr(),
+nrow = 3)
+
+output_plot
+ggsave(output_plot, filename = "figures/body_condition.png", width = 5, height = 15, dpi = 500)
+```
+
+# Time spent foraging
+
+We test whether time spent foraging (diving while not feeding)
+
+a\. changing across the CR phase because adults forage in different areas
+
+b\. affected by environmental phenology (i.e. sea-ice retreat)
+
+c\. affected by local direct environment (SIC)
+
+d\. affected by individual body condition
+
+e\. affected by prey abundance (winter sic)
+
+```{r scatterplot depth, message = F}
+#mean_depth_foraging
+cowplot::plot_grid(
+  ade_deploy %>%
+    ggplot(aes(x = body_condition, y = daily_time_foraging_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = sic_trip, y = daily_time_foraging_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = departure_rel_hatch_peak, y = daily_time_foraging_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = ice_retreat_day, y = daily_time_foraging_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = winter_sic_S1, y = daily_time_foraging_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = mean_depth_foraging, y = daily_time_foraging_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ncol = 3)
+
+hist(ade_deploy$daily_time_foraging_hrs)
+summary(ade_deploy$daily_time_foraging_hrs)
+# foraging mod
+predictors <- c("mean_depth_foraging", "sic_trip", "body_condition", "departure_rel_hatch_peak", "ice_retreat_day", "winter_sic_S1", "I(winter_sic_S1^2)")
+response <- "daily_time_foraging_hrs"
+random_effect <- "season"
+
+model_formulas <- generate_models_glmm(response, predictors, random_effect)
+
+model_list <- lapply(model_formulas, function(formula) {
+  glmmTMB(formula, data = ade_deploy, family = gaussian(link = "identity"))
+})
+
+#Model selection
+#aic_values <- sapply(model_list, AIC)
+aicc_values <- sapply(model_list, AICc)
+# bic_values <- sapply(model_list, BIC)
+
+#R squared
+r2_values <- lapply(model_list, function(model) {
+  r.squaredGLMM(model)
+})
+# Convert the list to a data frame
+r2_df <- do.call(rbind, r2_values)
+colnames(r2_df) <- c("Marginal_R2", "Conditional_R2")
+
+# Extract model formulas or terms
+model_terms <- sapply(model_formulas, function(formula) {
+  paste(deparse(formula), collapse = " ")  # Convert formula to a string
+})
+
+# Print AIC values
+aic_table <- data.frame(
+  Model = 1:length(model_list),
+  Terms = model_terms,
+  #AIC = aic_values,
+  AICc = aicc_values,
+  delta_AICc = 0,
+  # BIC = bic_values,
+  Marginal_R2 = r2_df[, "Marginal_R2"],
+  Conditional_R2 = r2_df[, "Conditional_R2"]
+) %>% arrange(AICc)
+
+aic_table$delta_AICc <- aic_table$AICc - aic_table$AICc[1]
+
+mod_select <- nice_table(rbind(aic_table[1:5,-1], aic_table[which(aic_table$Model == 2),-1],aic_table[which.min(aic_table$Model),-1]))
+save_as_docx(mod_select, path = "figures/mod_selection_foraging.docx")
+#best model
+best_model_index <- which.min(aicc_values)
+fit_best <- model_list[[best_model_index]]
+
+#check model
+# Extract deviance residuals
+residuals_dev <- residuals(fit_best, type = "deviance")
+
+# Plot residuals vs fitted values --> randomly scatteredd around 0 = homoscedasticity
+plot(fitted(fit_best), residuals_dev, xlab = "Fitted values", ylab = "Deviance residuals")
+abline(h = 0, col = "red", lty = 2)
+
+simulateResiduals(fittedModel = fit_best, plot = T)
+
+#summary
+model_summary <- summary(fit_best)
+print(model_summary)
+
+modelsummary(fit_best,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_foraging.docx")
+```
+
+Best model is \~ SIC, again super low R²
+
+```{r plot foraging, message = F}
+output_plot <- 
+plot(ggpredict(fit_best, terms = "sic_trip[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  annotate(x = .7, y = 14, geom = "text",
+           label = paste("p =", round(model_summary$coefficients$cond[2,4], 3))) +
+  labs(x = "SIC over foraging trip", y = "Daily time spent foraging (hrs)", title = NULL) +
+  theme_pubr() +
+  labs_pubr()
+
+output_plot
+ggsave(output_plot, filename = "figures/foraging.png", width = 5, height = 5, dpi = 500)
+```
+
+# Time spent feeding
+
+We test whether average time spent feeding is
+
+a\. changing across the CR phase because adults need to feed growing chicks
+
+b\. affected by environmental phenology (i.e. sea-ice retreat)
+
+c\. affected by local direct environment (i.e. SIC)
+
+d\. affected by individual body condition
+
+e\. prey abundance (winter sic)
+
+f\. foraging effort
+
+```{r daily_time_foraging_sec, message = F}
+cowplot::plot_grid(
+  ade_deploy %>%
+    ggplot(aes(x = daily_time_foraging_hrs, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = mean_depth_foraging, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = body_condition, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = sic_trip, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = departure_rel_hatch_peak, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = winter_sic_S1, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ade_deploy %>%
+    ggplot(aes(x = ice_retreat_day, y = daily_time_feeding_hrs)) +
+    geom_point() +
+    geom_smooth(method = "gam") +
+    theme_pubr() +
+    labs_pubr(),
+  ncol = 3)
+
+hist(ade_deploy$daily_time_feeding_hrs)
+summary(ade_deploy$daily_time_feeding_hrs)
+shapiro.test(ade_deploy$daily_time_feeding_hrs)
+
+# feeding mod
+predictors <- c("daily_time_foraging_hrs", "I(daily_time_foraging_hrs^2)", "sic_trip", "body_condition", "departure_rel_hatch_peak", "ice_retreat_day", "winter_sic_S1", "I(winter_sic_S1^2)")
+response <- "daily_time_feeding_hrs"
+random_effect <- "season"
+
+model_formulas <- generate_models_glmm(response, predictors, random_effect)
+
+model_list <- lapply(model_formulas, function(formula) {
+  glmmTMB(formula, data = ade_deploy, family = gaussian) #also tried tweedie but gaussian works better
+})
+
+#Model selection
+#aic_values <- sapply(model_list, AIC)
+aicc_values <- sapply(model_list, AICc)
+# bic_values <- sapply(model_list, BIC)
+
+#R squared
+r2_values <- lapply(model_list, function(model) {
+  r.squaredGLMM(model)
+})
+# Convert the list to a data frame
+r2_df <- do.call(rbind, r2_values)
+colnames(r2_df) <- c("Marginal_R2", "Conditional_R2")
+
+# Extract model formulas or terms
+model_terms <- sapply(model_formulas, function(formula) {
+  paste(deparse(formula), collapse = " ")  # Convert formula to a string
+})
+
+# Print AIC values
+aic_table <- data.frame(
+  Model = 1:length(model_list),
+  Terms = model_terms,
+  #AIC = aic_values,
+  AICc = aicc_values,
+  delta_AICc = 0,
+  # BIC = bic_values,
+  Marginal_R2 = r2_df[, "Marginal_R2"],
+  Conditional_R2 = r2_df[, "Conditional_R2"]
+) %>% arrange(AICc)
+
+aic_table$delta_AICc <- aic_table$AICc - aic_table$AICc[1]
+
+mod_select <- nice_table(rbind(aic_table[1:5,-1], aic_table[which(aic_table$Model == 2),-1],aic_table[which.min(aic_table$Model),-1]))
+save_as_docx(mod_select, path = "figures/mod_selection_feeding.docx")
+#best model
+best_model_index <- which.min(aicc_values)
+fit_best <- model_list[[best_model_index]]
+
+#check model
+# Extract deviance residuals
+residuals_dev <- residuals(fit_best, type = "deviance")
+
+# Plot residuals vs fitted values --> randomly scatteredd around 0 = homoscedasticity
+plot(fitted(fit_best), residuals_dev, xlab = "Fitted values", ylab = "Deviance residuals")
+abline(h = 0, col = "red", lty = 2)
+
+simulateResiduals(fittedModel = fit_best, plot = T)
+
+#summary
+model_summary <- summary(fit_best)
+print(model_summary)
+
+modelsummary(fit_best,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_feeding.docx")
+```
+
+Best model is feeding duration \~ Winter SIC² + foraging time²
+
+-   In line with papers showing a quadratic relationship between SIC and krill
+
+```{r feeding model, message = F}
+output_plot <- cowplot::plot_grid(
+plot(ggpredict(fit_best, terms = "daily_time_foraging_hrs[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  # annotate(x = 6, y = 4, geom = "text",
+  #          label = paste("p =", round(model_summary$coefficients$cond[2,4], 3))) +
+  labs(x = "Daily time spent diving (hrs)", y = "Daily time spent feeding (hrs)", title = "A.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(ggpredict(fit_best, terms = "winter_sic_S1[all]"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  # annotate(x = 0.63, y = 4, geom = "text",
+  #          label = paste("p =", round(model_summary$coefficients$cond[5,4], 3))) +
+  labs(x = "Proportion of wintering area\ncovered by sea-ice", y = "Daily time spent feeding (hrs)", title = "B.") +
+  theme_pubr() +
+  labs_pubr(),
+nrow = 2)
+output_plot
+
+ggsave(output_plot, filename = "figures/feeding.png", width = 5, height = 10, dpi = 500)
+
+output_plot_comb <- plot(ggpredict(fit_best, terms = c("daily_time_foraging_hrs[all]","winter_sic_S1[.49,.55,.61]"), type = "fixed", margin = "mean_mode"),
+     show_residuals = F,
+     ci_style = "dash",
+     dot_alpha = 0.5, colors = "eight") + 
+  labs(x = "Daily time spent foraging (hrs)", y = "Daily time spent feeding (hrs)", col = "Winter SIC", title = NULL) +
+  theme_pubr() +
+  labs_pubr()
+
+output_plot_comb
+ggsave(output_plot_comb, filename = "figures/feeding_comb.png", width = 5, height = 5, dpi = 500)
+```
+
+# Trip duration
+
+We test whether trip duration is
+
+a\. changing across the CR phase because adults need to feed growing chicks
+
+b\. affected by environmental phenology (i.e. sea-ice retreat)
+
+c\. affected by local direct environment (i.e. SIC)
+
+d\. affected by individual body condition
+
+e\. affected by foraging duration
+
+f\. affected by feeding duration
+
+g\. affected by prey abundance (winter sic)
+
+We compare all models matching the following conditions :
+
+-   To avoid multicolinearity, each model contains either
+
+    -   SIC
+
+    -   Fraction of pack and fast ice
+
+    -   none
+
+```{r trip duration, message = F}
+cowplot::plot_grid(
+ade_deploy %>%
+  ggplot(aes(x = daily_time_foraging_hrs, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = daily_time_feeding_hrs, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = mean_depth_foraging, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = body_condition, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = sic_trip, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = departure_rel_hatch_peak, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = winter_sic_S1, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = ice_retreat_day, y = log_trip)) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ncol = 3)
+
+hist(log(ade_deploy$trip_duration_days))
+hist(ade_deploy$trip_duration_days)
+summary(ade_deploy$trip_duration_days)
+
+# trip duration
+predictors <- c("daily_time_feeding_hrs" ,"daily_time_foraging_hrs", "sic_trip", "body_condition", "departure_rel_hatch_peak", "ice_retreat_day", "winter_sic_S1", "I(winter_sic_S1^2)")
+response <- "trip_duration_days"
+random_effect <- "season"
+
+model_formulas <- generate_models_glmm(response, predictors, random_effect)
+
+model_list <- lapply(model_formulas, function(formula) {
+  glmmTMB(formula, data = ade_deploy, family = Gamma(link = "log"))
+})
+
+#Model selection
+#aic_values <- sapply(model_list, AIC)
+aicc_values <- sapply(model_list, AICc)
+# bic_values <- sapply(model_list, BIC)
+
+#R squared
+r2_values <- lapply(model_list, function(model) {
+  r.squaredGLMM(model)[1,]
+})
+# Convert the list to a data frame
+r2_df <- do.call(rbind, r2_values)
+colnames(r2_df) <- c("Marginal_R2", "Conditional_R2")
+
+# Extract model formulas or terms
+model_terms <- sapply(model_formulas, function(formula) {
+  paste(deparse(formula), collapse = " ")  # Convert formula to a string
+})
+
+# Print AIC values
+aic_table <- data.frame(
+  Model = 1:length(model_list),
+  Terms = model_terms,
+  #AIC = aic_values,
+  AICc = aicc_values,
+  delta_AICc = 0,
+  # BIC = bic_values,
+  Marginal_R2 = r2_df[, "Marginal_R2"],
+  Conditional_R2 = r2_df[, "Conditional_R2"]
+) %>% arrange(AICc)
+
+aic_table$delta_AICc <- aic_table$AICc - aic_table$AICc[1]
+
+mod_select <- nice_table(rbind(aic_table[1:5,-1], aic_table[which(aic_table$Model == 2),-1],aic_table[which.min(aic_table$Model),-1]))
+save_as_docx(mod_select, path = "figures/mod_selection_trip_duration.docx")
+
+#best model
+best_model_index <- which.min(aicc_values)
+fit_best <- model_list[[best_model_index]]
+
+#check model
+plot(fitted(fit_best),resid(fit_best))
+# Extract deviance residuals
+residuals_dev <- residuals(fit_best, type = "deviance")
+
+# Plot residuals vs fitted values --> randomly scatteredd around 0 = homoscedasticity
+plot(fitted(fit_best), residuals_dev, xlab = "Fitted values", ylab = "Deviance residuals")
+abline(h = 0, col = "red", lty = 2)
+
+simulateResiduals(fittedModel = fit_best, plot = T)
+
+#summary
+model_summary <- summary(fit_best)
+print(model_summary)
+
+modelsummary(fit_best,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_trip_duration.docx")
+```
+
+Best model is trip duration \~ time spent feeding + BC + trip duration + trip date + ice phenology + winter SIC
+
+```{r mod trip dur, message = F}
+#check model
+output_plot <- cowplot::plot_grid(
+plot(predict_response(fit_best, terms = "daily_time_feeding_hrs[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs(x = "Daily time spent feeding (hrs)", y = "Trip duration (days)", title = "A.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "body_condition[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs(x = "Body condition", y = "Trip duration (days)", title = "B.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "departure_rel_hatch_peak[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs(x = "Trip departure date \nrelative to hatching peak", y = "Trip duration (days)", title = "C.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "ice_retreat_day[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs(x = "Sea-ice retreat date \nrelative to November 1st", y = "Trip duration (days)", title = "D.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "winter_sic_S1[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs(x = "Proportion of wintering area\ncovered by sea-ice", y = "Trip duration (days)", title = "E.") +
+  theme_pubr() +
+  labs_pubr(),
+nrow = 2)
+output_plot
+ggsave(output_plot, filename = "figures/trip_duration.png", width = 15, height = 10, dpi = 500)
+```
+
+# DEE
+
+We test whether DEE is
+
+a\. changing across the CR phase because adults need to feed growing chicks
+
+b\. affected by environmental phenology (i.e. sea-ice retreat)
+
+c\. affected by local direct environment (i.e. SIC)
+
+d\. affected by individual body condition
+
+e\. affected by foraging parameters (feeding time, trip duration)
+
+f\. affected by prey abundance
+
+```{r DEE}
+cowplot::plot_grid(
+ade_deploy %>%
+  ggplot(aes(x = trip_duration_days, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = daily_time_feeding_hrs, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = daily_time_foraging_hrs, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = mean_depth_foraging, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = body_condition, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = sic_trip, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = winter_sic_S1, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = departure_rel_hatch_peak, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr(),
+ade_deploy %>%
+  ggplot(aes(x = ice_retreat_day, y = log(dee))) +
+  geom_point() +
+  geom_smooth(method = "gam") +
+  theme_pubr() +
+  labs_pubr())
+
+hist(ade_deploy$dee)
+summary(ade_deploy$trip_duration_days)
+
+# trip duration
+predictors <- c("trip_duration_days","daily_time_feeding_hrs" ,"daily_time_foraging_hrs", "sic_trip", "body_condition", "departure_rel_hatch_peak", "ice_retreat_day", "winter_sic_S1", "I(winter_sic_S1^2)")
+response <- "dee"
+random_effect <- "season"
+
+model_formulas <- generate_models_glmm(response, predictors, random_effect)
+
+model_list <- lapply(model_formulas, function(formula) {
+  glmmTMB(formula, data = ade_deploy, family = Gamma(link = "log"))
+})
+
+#Model selection
+#aic_values <- sapply(model_list, AIC)
+aicc_values <- sapply(model_list, AICc)
+# bic_values <- sapply(model_list, BIC)
+
+#R squared
+r2_values <- lapply(model_list, function(model) {
+  r.squaredGLMM(model)[1,]
+})
+# Convert the list to a data frame
+r2_df <- do.call(rbind, r2_values)
+colnames(r2_df) <- c("Marginal_R2", "Conditional_R2")
+
+# Extract model formulas or terms
+model_terms <- sapply(model_formulas, function(formula) {
+  paste(deparse(formula), collapse = " ")  # Convert formula to a string
+})
+
+# Print AIC values
+aic_table <- data.frame(
+  Model = 1:length(model_list),
+  Terms = model_terms,
+  #AIC = aic_values,
+  AICc = aicc_values,
+  delta_AICc = 0,
+  # BIC = bic_values,
+  Marginal_R2 = r2_df[, "Marginal_R2"],
+  Conditional_R2 = r2_df[, "Conditional_R2"]
+) %>% arrange(AICc)
+
+aic_table$delta_AICc <- aic_table$AICc - aic_table$AICc[1]
+
+mod_select <- nice_table(rbind(aic_table[1:5,-1], aic_table[which(aic_table$Model == 2),-1],aic_table[which.min(aic_table$Model),-1]))
+save_as_docx(mod_select, path = "figures/mod_selection_dee.docx")
+
+#best model
+best_model_index <- which.min(aicc_values)
+fit_best <- model_list[[best_model_index]]
+
+fit_best <- glmmTMB(dee ~ daily_time_feeding_hrs + daily_time_foraging_hrs +
+                      body_condition + departure_rel_hatch_peak + ice_retreat_day +
+                      winter_sic_S1 + I(winter_sic_S1^2) + (1|season),
+                    data = ade_deploy,
+                    family = Gamma(link = "log"))
+
+#check model
+plot(fitted(fit_best),resid(fit_best))
+# Extract deviance residuals
+residuals_dev <- residuals(fit_best, type = "deviance")
+
+# Plot residuals vs fitted values --> randomly scatteredd around 0 = homoscedasticity
+plot(fitted(fit_best), residuals_dev, xlab = "Fitted values", ylab = "Deviance residuals")
+abline(h = 0, col = "red", lty = 2)
+
+simulateResiduals(fittedModel = fit_best, plot = T)
+
+#summary
+model_summary <- summary(fit_best)
+print(model_summary)
+
+modelsummary(fit_best,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_dee.docx")
+```
+
+Best model plot :
+
+```{r DEE mod, message = F}
+output_plot <- cowplot::plot_grid(
+plot(predict_response(fit_best, terms = "daily_time_feeding_hrs[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(2000,9000)) +
+  labs(x = "Daily time spent feeding (hrs)", y = "DEE (kJ)", title = "A.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "daily_time_foraging_hrs[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(2000,9000)) +
+  labs(x = "Daily time spent diving (hrs)", y = "DEE (kJ)", title = "B.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "body_condition[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(2000,9000)) +
+  labs(x = "Body condition", y = "DEE (kJ)", title = "C.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "departure_rel_hatch_peak[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(2000,9000)) +
+  labs(x = "Trip departure date\nrelative to hatching peak", y = "DEE (kJ)", title = "D.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "ice_retreat_day[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(2000,9000)) +
+  labs(x = "Sea-ice retreat date \nrelative to November 1st", y = "DEE (kJ)", title = "E.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "winter_sic_S1[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(2000,9000)) +
+  labs(x = "Proportion of wintering area\ncovered by sea-ice", y = "DEE (kJ)", title = "F.") +
+  theme_pubr() +
+  labs_pubr(),
+nrow = 2)
+output_plot
+
+ggsave(output_plot, filename = "figures/dee.png", width = 15, height = 10, dpi = 500)
+```
+
+# Season level - BS
+
+```{r}
+season_ade <- ade_deploy %>%
+  group_by(season, year, FS_janv, ice_retreat_day, mean_t, mean_wind, n_day_snow, prop_succeed_incub, hatching_peak_day, winter_sic_S1) %>%
+  summarise(mean_foraging = mean(daily_time_foraging_hrs),
+            mean_feeding = mean(daily_time_feeding_hrs),
+            mean_foraging_depth = mean(mean_depth_foraging),
+            mean_trip_dur = mean(trip_duration_days),
+            mean_dee = mean(dee),
+            med_foraging = median(daily_time_foraging_hrs),
+            med_feeding = median(daily_time_feeding_hrs),
+            med_foraging_depth = median(mean_depth_foraging),
+            med_trip_dur = median(trip_duration_days),
+            med_dee = median(dee)) 
+
+env_tibble <- read.csv("/media/bdupuis/1091_PhD_BD1/Data/Environmental data//env_data_copernicus.csv")
+
+#adjust dates settings
+env_tibble$date <- ymd(env_tibble$date)
+env_tibble$month <- month(env_tibble$date)
+env_tibble$season <- ifelse(month(env_tibble$date) <= 2,
+                            year(env_tibble$date) - 1,
+                            year(env_tibble$date))
+env_tibble$year <- as.factor(year(env_tibble$date))
+env_tibble$dummy_date <- env_tibble$date
+year(env_tibble$dummy_date) <- 1904
+year(env_tibble$dummy_date[which(month(env_tibble$dummy_date) <= 2)]) <- 1905
+
+#remove feb 29th bug
+env_tibble <- env_tibble %>% filter(!is.na(dummy_date))
+
+env_tibble$days_since_start_season <- env_tibble$dummy_date - ymd("1904-11-01")
+
+#rename some cols for clarity
+env_tibble <- env_tibble %>%
+   rename(mean_sic = sic)# %>% 
+  # filter(spatial_scale == "S1", dummy_date >= ymd("1904-07-01"), dummy_date <= ymd("1904-08-31"))
+
+glimpse(env_tibble)
+
+monthly_env <- env_tibble %>% 
+  filter(dummy_date >= ymd("1904-12-15"), dummy_date <= ymd("1905-01-31"), spatial_scale == "S2") %>% 
+  group_by(season) %>% 
+  summarise(mean_sic_janv = mean(mean_sic),
+            mean_fast_janv = mean(frac_fast),
+            mean_pack_janv = mean(frac_pack)) %>%
+  mutate(year = as.numeric(as.character(season))) %>% 
+  dplyr::select(-season)
+
+season_ade <- left_join(season_ade, monthly_env)
+ade_deploy <- left_join(ade_deploy, monthly_env)
+season_ade <- season_ade %>% mutate(FS_janv = FS_janv/2)
+ade_deploy <- ade_deploy %>% mutate(FS_janv = FS_janv/2)
+bs_tibble <- read.csv("data/breeding_success_ade.csv") %>% 
+  dplyr::select(year, n_couple_dec, n_chicks_jan)
+
+season_ade <- left_join(season_ade, bs_tibble)
+```
+
+Explore scatterplot
+
+```{r scatterplot season, message = F}
+#Sea-ice
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = ice_retreat_day, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_sic_janv, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_pack_janv, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_fast_janv, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#Winter
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = winter_sic_S1, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#Land
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = n_day_snow, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_wind, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_t, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#bs
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = prop_succeed_incub, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#pheno
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = hatching_peak_day, y = FS_janv)) +
+  #geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#indivdiual
+ade_deploy %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_foraging, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_feeding, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_foraging_depth, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_dee, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = mean_trip_dur, y = FS_janv)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#####Prop succes incub
+#Sea-ice
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = ice_retreat_day, y = prop_succeed_incub)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+
+#Winter
+season_ade %>% filter(season != "16_17") %>% 
+  ggplot(aes(x = winter_sic_S1, y = prop_succeed_incub)) +
+  geom_smooth(method = "gam", col = "black") + 
+  geom_point(aes(col = as.factor(season))) +
+  geom_text(aes(label = season), hjust=0, vjust=0) +
+  theme_pubr() +
+  labs_pubr() +
+  scale_color_viridis(discrete = T)
+```
+
+We see that most of the time, season 16/17 is appart from the rest, probably because of the extreme event (rain).
+
+We test whether January breeding success (N chicks in January/N breeding pairs in December, only focuses on CR) is
+
+a\. affected by environmental on land (average temperature, wind, snow)
+
+b\. affected by energetic parameters (DEE, time spent foraging, trip duration)
+
+c\. affected by phenology
+
+```{r mod seasons, message = F}
+sub_season_ade <- season_ade %>% filter(season != "16_17")
+
+predictors <- c("mean_t", "mean_wind", "n_day_snow", "prop_succeed_incub","winter_sic_S1", "ice_retreat_day", "mean_sic_janv")
+response <- "FS_janv"
+model_formulas_env <- generate_models_glm(response, predictors)
+
+predictors <- c("mean_t", "mean_wind", "n_day_snow", "prop_succeed_incub", "mean_feeding", "mean_trip_dur", "mean_dee")
+response <- "FS_janv"
+model_formulas_ade <- generate_models_glm(response, predictors)
+model_formulas <- c(model_formulas_env, model_formulas_ade[-1])
+
+model_list <- lapply(model_formulas, function(formula) {
+  #betareg(formula, data = sub_season_ade)
+  glmmTMB(formula,
+          family = beta_family(link = "logit"),
+          data = season_ade)
+})
+
+#Model selection
+aicc_values <- sapply(model_list, AICc)
+
+#R squared
+r2_values <- lapply(model_list, function(model) {
+  #summary(model)$pseudo.r.squared
+  r2(model)
+})
+# Convert the list to a data frame
+r2_df <- do.call(rbind, r2_values)
+colnames(r2_df) <- c("pseudo_ferrari_R2")
+
+# Extract model formulas or terms
+model_terms <- sapply(model_formulas, function(formula) {
+  paste(deparse(formula), collapse = " ")  # Convert formula to a string
+})
+
+# Print AIC values
+aic_table <- data.frame(
+  Model = 1:length(model_list),
+  Terms = model_terms,
+  AICc = aicc_values,
+  delta_AICc = 0,
+  Pseudo_R2 = as.numeric(r2_df[, "pseudo_ferrari_R2"])
+) %>% arrange(AICc)
+
+aic_table$delta_AICc <- aic_table$AICc - aic_table$AICc[1]
+
+mod_select <- nice_table(rbind(aic_table[1:5,-1], aic_table[which(aic_table$Model == 2),-1],aic_table[which.min(aic_table$Model),-1]))
+save_as_docx(mod_select, path = "figures/mod_selection_fs_beta.docx")
+
+#best model
+best_model_index <- which.min(aicc_values)
+fit_best <- model_list[[best_model_index]]
+
+#check model
+res_p <- residuals(fit_best, type = "pearson")
+plot(res_p)
+abline(h = 0, col = "red")
+
+plot(fitted(fit_best), res_p,
+     xlab = "Fitted values",
+     ylab = "Pearson residuals")
+abline(h = 0, col = "red")
+
+qqnorm(res_p)
+qqline(res_p, col = "red")
+
+#summary
+model_summary <- summary(fit_best)
+print(model_summary)
+
+modelsummary(fit_best,
+             shape = term ~ model + statistic,
+             statistic = "std.error",
+             stars = T,
+             output = "figures/mod_summary_fs_beta.docx")
+```
+
+Nice, we know get a pretty good model, with
+
+FS \~ Foraging + trip duration + N(day snow)
+
+```{r plot season, message = F}
+output_plot <- cowplot::plot_grid(
+plot(predict_response(fit_best, terms = "mean_feeding[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,0.75)) +
+  labs(x = "Average daily time spent feeding (hrs)", y = "Fledging success", title = "A.") +
+  theme_pubr() +
+  labs_pubr(),
+plot(predict_response(fit_best, terms = "n_day_snow[all]", type = "fixed", margin = "mean_mode"),
+     show_residuals = T,
+     ci_style = "dash",
+     dot_alpha = 0.5) +
+  coord_cartesian(ylim = c(0,0.75)) +
+  labs(x = "Number of days with snowfall\nover chick-guarding", y = "Fledging success", title = "B.") +
+  theme_pubr() +
+  labs_pubr(),
+nrow = 2)
+output_plot
+
+ggsave(output_plot, filename = "figures/fs_beta.png", width = 5, height = 10, dpi = 500)
+```

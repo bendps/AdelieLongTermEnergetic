@@ -1,0 +1,157 @@
+---
+title: "Get_env_data"
+author: "Benjamin Dupuis"
+format: html
+editor: visual
+---
+
+This script formats and prepare environmental data for latter analyses.
+
+On land data were obtained from MeteoFrance (https://donneespubliques.meteofrance.fr/?fond=produit&id_produit=90&id_rubrique=32)
+
+At-sea data were extracted from the Copernicus Marine GLORYS12V1 dataset ([https://doi.org/10.48670/moi-00021]())
+
+```{r}
+#| label: preambule
+
+rm(list = ls())
+gc()
+
+library(ncdf4)
+library(dplyr)
+library(purrr)
+library(lubridate)
+library(CFtime)
+library(tidyverse)
+library(data.table)
+```
+
+```{r}
+#| label: meteofrance
+
+#Meteofrance for land data
+data_mf <- "/media/bdupuis/1091_PhD_BD1/Data/Environmental data/meteo_france/"
+file_mf <- list.files(data_mf)
+
+mf_list <- list()
+i <- file_mf[3]
+j <- 1
+for(i in file_mf){
+  mf_temp <- fread(paste0(data_mf, i))
+  mf_temp <- mf_temp %>%
+    filter(NUM_POSTE == 98404003) %>%  #DDU ID
+    mutate(date = ymd(AAAAMMJJ)) %>% 
+    filter(date >= ymd("1998-10-01"))
+  
+  if(i == "Q_984_latest-2023-2024_autres-parametres.csv" |
+     i == "Q_984_previous-1950-2022_autres-parametres.csv"){
+    mf_temp <- mf_temp %>% 
+      dplyr::select(date, NEIG, UM, PMERM)
+  }else{
+    mf_temp <- mf_temp %>% 
+      dplyr::select(date, TAMPLI, TN, TX, TM, FFM)
+  }
+  mf_list[[j]] <- mf_temp
+  j<- j+1
+}
+
+mf_tibble <- rbind(left_join(mf_list[[1]], mf_list[[2]]), left_join(mf_list[[3]], mf_list[[4]]))
+mf_tibble <- mf_tibble %>%
+  filter(month(date) > 11 | month(date) < 2) %>% 
+  mutate(year = year(date),
+         dummy_date = date)
+
+year(mf_tibble$dummy_date) <- 1900
+year(mf_tibble$dummy_date)[which(month(mf_tibble$dummy_date) < 3)] <- 1901
+mf_tibble$year[which(month(mf_tibble$date) < 3)] <- mf_tibble$year[which(month(mf_tibble$date) < 3)] - 1
+
+#Keep only CR Data
+#Get yearly values 
+#Some variables like humidity and pressure were removed from further analyses
+mf_year <- mf_tibble %>% 
+  filter(dummy_date >= ymd("1900-12-19")) %>% 
+  group_by(year) %>% 
+  summarise(n_day_snow = sum(NEIG, na.rm = T),
+            #mean_humidity = mean(UM, na.rm = T),
+            #sd_humidity = sd(UM, na.rm = T),
+            #mean_pressure = mean(PMERM, na.rm = T),
+            #sd_pressure = sd(PMERM, na.rm = T),
+            mean_wind = mean(FFM, na.rm = T),
+            #sd_wind = sd(FFM, na.rm = T),
+            mean_t = mean(TM, na.rm = T))
+            #mean_tampli = mean(TAMPLI, na.rm = T))
+
+write_csv(mf_year, "D:/Data/Environmental data/mf_yearly_data.csv")
+```
+
+```{r}
+#| label: copernicus
+
+# Define base directory
+base_dir <- "/media/bdupuis/1091_PhD_BD1/Data/Environmental data/copernicus/ocean_physics"
+
+# Get spatial scales (subdirectories)
+spatial_scales <- list.files(base_dir)
+
+# Function to process one NetCDF file
+process_nc_file <- function(nc_path, spatial_scale) {
+  nc_data <- nc_open(nc_path)
+  
+  # Get time
+  time <- ncvar_get(nc_data, "time")
+  tunits <- ncatt_get(nc_data, "time", "units")
+  cf <- CFtime(tunits$value, calendar = "proleptic_gregorian", time)
+  time_obs <- as_timestamp(cf)
+  
+  # Initialize daily tibble
+  year_env <- tibble(date = time_obs, sic = NA, frac_ice = NA, frac_fast = NA)
+  
+  # Get land mask to count sea cells
+  land_mask <- ncvar_get(nc_data, "so")
+  fillvalue <- ncatt_get(nc_data, "so", "_FillValue")
+  land_mask[land_mask == fillvalue$value] <- NA
+  land_slice <- land_mask[, , 1]
+  n_land_cell <- sum(is.na(land_slice))
+  n_sea_cell <- length(land_slice) - n_land_cell
+  
+  # Get sea ice data
+  my_var_array <- ncvar_get(nc_data, "siconc")
+  fillvalue <- ncatt_get(nc_data, "siconc", "_FillValue")
+  my_var_array[my_var_array == fillvalue$value] <- NA
+  
+  # Compute daily means
+  year_env[, c("sic", "frac_ice", "frac_fast")] <- t(apply(my_var_array, 3, function(daily_ice) {
+    sic <- sum(daily_ice, na.rm = TRUE) / n_sea_cell
+    frac_ice <- sum(daily_ice > 0.15, na.rm = TRUE) / n_sea_cell
+    frac_fast <- sum(daily_ice > 0.8, na.rm = TRUE) / n_sea_cell
+    c(sic, frac_ice, frac_fast)
+  }))
+  
+  # Add spatial scale and compute frac_pack
+  year_env <- year_env %>%
+    mutate(spatial_scale = spatial_scale, frac_pack = frac_ice - frac_fast)
+  
+  # Close NetCDF file
+  nc_close(nc_data)
+  
+  return(year_env)
+}
+
+# Loop over spatial scales and process all NetCDF files
+my_env_list <- map(spatial_scales, function(my_spatial_scale) {
+  # Get NetCDF files in the current spatial scale directory
+  list_nc <- list.files(file.path(base_dir, my_spatial_scale), pattern = "\\.nc$", full.names = TRUE)
+  
+  # Process each NetCDF file
+  map_dfr(list_nc, process_nc_file, spatial_scale = my_spatial_scale)
+})
+
+# Combine all results into one tibble
+my_env_tibble <- bind_rows(my_env_list)
+
+#check data
+ggplot(data = my_env_tibble, aes(x = date(date), y = sic, col = spatial_scale)) +
+  geom_line()
+
+write_csv(my_env_tibble, paste0("D:/Data/Environmental data/env_data_copernicus.csv"))
+```
